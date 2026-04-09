@@ -1,0 +1,245 @@
+#include <M5StickCPlus.h>
+#include <math.h>
+#include <string.h>
+
+#define SCREEN_W 240
+#define SCREEN_H 135
+
+TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+char input_text[128] = {0};
+
+
+const int KEY_ROWS = 4;
+const int KEY_COLS = 14;
+
+char keyboard[KEY_ROWS][KEY_COLS] = {
+  {'`', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', ' '},
+  {'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '[', ']', '\\', ' '},
+  {'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', '\'', ' ', ' ', ' '},
+  {'Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.', '/', ' ', ' ', ' ', ' '}
+};
+
+int keyboard_start_x = 8;
+int keyboard_start_y = 55;
+int keyboard_offset_x = 8;
+
+int key_w = 14;
+int key_h = 14;
+
+double keyboard_x_space = 16.0;
+double keyboard_y_space = 17.0;
+
+int input_x = 8;
+int input_y = 8;
+int input_w = 165;
+int input_h = 24;
+
+int clear_x = 180;
+int clear_y = 8;
+int clear_w = 50;
+int clear_h = 16;
+
+int back_x = 180;
+int back_y = 30;
+int back_w = 50;
+int back_h = 16;
+
+float cursorX = SCREEN_W / 2.0f;
+float cursorY = SCREEN_H / 2.0f;
+float targetX = SCREEN_W / 2.0f;
+float targetY = SCREEN_H / 2.0f;
+
+float calibration_x = 0.0f;
+float calibration_y = 0.0f;
+
+float sensitivity_x = 2.5f;
+float sensitivity_y = 2.5f;
+
+float scale_x = 60.0f;
+float scale_y = 50.0f;
+
+float smooth_factor = 0.5f;
+
+float deadzone_x = 0.08f;
+float deadzone_y = 0.08f;
+
+float filteredAccX = 0.0f;
+float filteredAccY = 0.0f;
+float imu_filter_alpha = 0.10f;
+
+unsigned long last_click_ms = 0;
+const unsigned long click_interval = 160;
+
+void drawKeyboardUI();
+void drawCursor();
+void updateCursorFromIMU();
+void handleClick(int x, int y);
+void handleKeyboardClick(int x, int y);
+void appendChar(char c);
+
+void setup() {
+  M5.begin();
+  M5.IMU.Init();
+
+  M5.Lcd.setRotation(1);
+  M5.Lcd.fillScreen(BLACK);
+
+  M5.Axp.SetLDO2(true);
+  M5.Axp.ScreenBreath(30);
+  delay(100);
+
+  spr.setColorDepth(16);
+  spr.createSprite(SCREEN_W, SCREEN_H);
+  spr.setTextSize(1);
+  spr.setTextFont(1);
+  //display module
+  spr.fillSprite(0x0000);
+  spr.pushSprite(0, 0);
+}
+
+void loop() {
+  M5.update();
+  //motion control
+  updateCursorFromIMU();
+  spr.fillSprite(TFT_BLACK);
+
+  drawKeyboardUI();
+  drawCursor();
+  //interaction module
+  if (M5.BtnA.wasPressed()) {
+    if (millis() - last_click_ms > click_interval) {
+      handleClick((int)cursorX, (int)cursorY);
+      last_click_ms = millis();
+    }
+  }
+  
+  if (M5.BtnB.wasPressed()) {
+    int len = strlen(input_text);
+    if (len > 0) {
+      input_text[len - 1] = '\0';
+    }
+  }
+
+  spr.pushSprite(0, 0);
+  delay(15);
+}
+
+void updateCursorFromIMU() {
+  float accX, accY, accZ;
+  M5.IMU.getAccelData(&accX, &accY, &accZ);
+ 
+  filteredAccX = filteredAccX * (1.0f - imu_filter_alpha) + accX * imu_filter_alpha;
+  filteredAccY = filteredAccY * (1.0f - imu_filter_alpha) + accY * imu_filter_alpha;
+
+  float dx = filteredAccY - calibration_y;
+  float dy = filteredAccX - calibration_x;
+
+  if (fabs(dx) < deadzone_x) dx = 0.0f;
+  if (fabs(dy) < deadzone_y) dy = 0.0f;
+ 
+  targetX = SCREEN_W / 2.0f - (dx * scale_x * sensitivity_x);
+  targetY = SCREEN_H / 2.0f + (dy * scale_y * sensitivity_y);
+
+  if (targetX < 0) targetX = 0;
+  if (targetX > SCREEN_W - 1) targetX = SCREEN_W - 1;
+  if (targetY < 0) targetY = 0;
+  if (targetY > SCREEN_H - 1) targetY = SCREEN_H - 1;
+
+  cursorX += (targetX - cursorX) * smooth_factor;
+  cursorY += (targetY - cursorY) * smooth_factor;
+}
+
+void drawCursor() {
+  int x = (int)cursorX;
+  int y = (int)cursorY;
+
+  spr.drawCircle(x, y, 4, RED);
+  spr.drawFastHLine(x - 2, y, 5, RED);
+  spr.drawFastVLine(x, y - 2, 5, RED);
+}
+//
+void drawKeyboardUI() {
+  uint16_t bg = TFT_BLACK;    
+  uint16_t text = TFT_WHITE;   
+  uint16_t title = TFT_YELLOW; 
+  uint16_t accent = TFT_CYAN;  
+  uint16_t keyBorder = 0xC618; 
+
+  spr.setTextColor(title, bg);
+  spr.setCursor(8, 38);
+  spr.print("Tilt move   A select   B back");
+ 
+  spr.drawRect(input_x, input_y, input_w, input_h, text);
+  spr.setTextColor(text, bg);
+  spr.setCursor(input_x + 4, input_y + 8);
+  spr.print(input_text);
+ 
+  spr.drawRect(clear_x, clear_y, clear_w, clear_h, accent);
+  spr.setCursor(clear_x + 15, clear_y + 4);
+  spr.print("CL");
+
+  spr.drawRect(back_x, back_y, back_w, back_h, accent);
+  spr.setCursor(back_x + 12, back_y + 4);
+  spr.print("<-");
+
+  for (int row = 0; row < KEY_ROWS; row++) {
+    for (int col = 0; col < KEY_COLS; col++) {
+      char c = keyboard[row][col];
+      if (c == ' ') continue;
+
+      int x = keyboard_start_x + row * keyboard_offset_x + (int)(col * keyboard_x_space);
+      int y = keyboard_start_y + (int)(row * keyboard_y_space);
+
+      spr.drawRect(x, y, key_w, key_h, keyBorder);
+      spr.setTextColor(text, bg);
+      spr.setCursor(x + 4, y + 4);
+      spr.print(c);
+    }
+  }
+}
+//
+void handleClick(int x, int y) {
+
+  if (x >= clear_x && x <= clear_x + clear_w &&
+      y >= clear_y && y <= clear_y + clear_h) {
+    input_text[0] = '\0';
+    return;
+  }
+
+  if (x >= back_x && x <= back_x + back_w &&
+      y >= back_y && y <= back_y + back_h) {
+    int len = strlen(input_text);
+    if (len > 0) {
+      input_text[len - 1] = '\0';
+    }
+    return;
+  }
+
+  handleKeyboardClick(x, y);
+}
+
+void handleKeyboardClick(int x, int y) {
+  for (int row = 0; row < KEY_ROWS; row++) {
+    for (int col = 0; col < KEY_COLS; col++) {
+      char c = keyboard[row][col];
+      if (c == ' ') continue;
+
+      int key_x = keyboard_start_x + row * keyboard_offset_x + (int)(col * keyboard_x_space);
+      int key_y = keyboard_start_y + (int)(row * keyboard_y_space);
+
+      if (x >= key_x && x <= key_x + key_w &&
+          y >= key_y && y <= key_y + key_h) {
+        appendChar(c);
+        return;
+      }
+    }
+  }
+}
+
+void appendChar(char c) {
+  int len = strlen(input_text);
+  if (len < (int)sizeof(input_text) - 1) {
+    input_text[len] = c;
+    input_text[len + 1] = '\0';
+  }
+}
